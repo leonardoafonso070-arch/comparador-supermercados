@@ -800,7 +800,69 @@ def buscar_super_muffato(
         )
 
     ultimo_erro = None
+    if produto.ean:
+        try:
+            parametros_ean = urllib.parse.urlencode({
+                "fq": f"alternateIds_Ean:{produto.ean.strip()}",
+                "sc": MUFFATO_SALES_CHANNEL
+            })
 
+            url_ean = (
+                f"{MUFFATO_PRODUCT_API}"
+                f"?{parametros_ean}"
+            )
+
+            requisicao_ean = urllib.request.Request(
+                url_ean,
+                headers={
+                    "User-Agent": "Mozilla/5.0",
+                    "Accept": "application/json",
+                    "Referer": "https://www.supermuffato.com.br/"
+                }
+            )
+
+            with urllib.request.urlopen(
+                requisicao_ean,
+                timeout=25
+            ) as resposta:
+                produtos_vtex = json.loads(
+                    resposta.read().decode("utf-8")
+                )
+
+            if produtos_vtex:
+                produto_vtex = produtos_vtex[0]
+
+                oferta = extrair_oferta_muffato(
+                    produto_vtex
+                )
+
+                if oferta:
+                    return {
+                        "produto_id": produto.id,
+                        "produto": produto_vtex.get(
+                            "productName",
+                            produto.produto
+                        ),
+                        "supermercado": "Super Muffato",
+                        "preco_unitario": oferta["preco"],
+                        "preco_atacado": None,
+                        "quantidade_minima": None,
+                        "disponivel": True,
+                        "url": produto_vtex.get(
+                            "link",
+                            ""
+                        ),
+                        "status": "OK",
+                        "observacao": (
+                            "Preço obtido do Super Muffato "
+                            "diretamente pelo EAN."
+                        )
+                    }
+
+        except Exception as erro:
+            ultimo_erro = (
+                f"{type(erro).__name__}: {erro}"
+            )
     for termo in termos:
         try:
             dados_busca = (
