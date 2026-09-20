@@ -1042,7 +1042,8 @@ def coletar(
         "cep": pedido.cep,
         "precos": resultados
     }
-    @app.get("/planilha")
+    
+@app.get("/planilha")
 def planilha(
     produto: str,
     marca: str = "",
