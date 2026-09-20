@@ -690,8 +690,7 @@ def escolher_sugestao_muffato(
         if marca_ok and nome_ok:
             return item
 
-    return Nome
-
+    return None
 
 def consultar_muffato_produto(
     product_id: str
