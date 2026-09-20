@@ -1,5 +1,6 @@
 from datetime import datetime
 from typing import Any
+import base64
 import json
 import urllib.parse
 import urllib.request
@@ -10,7 +11,7 @@ from pydantic import BaseModel
 
 app = FastAPI(
     title="Coletor de Preços de Supermercados",
-    version="3.0.0"
+    version="4.0.0"
 )
 
 
@@ -32,7 +33,6 @@ class PedidoColeta(BaseModel):
 
 # ============================================================
 # ATACADÃO
-# Loja São José do Rio Preto América
 # ============================================================
 
 ATACADAO_API = "https://www.atacadao.com.br/api/graphql"
@@ -43,11 +43,36 @@ ATACADAO_SALES_CHANNEL = "1"
 
 # ============================================================
 # PÃO DE AÇÚCAR
-# Loja identificada pelo site para a localização configurada
 # ============================================================
 
 PAO_API = "https://api.vendas.gpa.digital/pa/search/search"
 PAO_STORE_ID = 461
+
+
+# ============================================================
+# SUPER MUFFATO
+# São José do Rio Preto - JK
+# ============================================================
+
+MUFFATO_AUTOCOMPLETE_API = (
+    "https://www.supermuffato.com.br/_v/segment/graphql/v1"
+)
+
+MUFFATO_PRODUCT_API = (
+    "https://www.supermuffato.com.br/"
+    "api/catalog_system/pub/products/search/"
+)
+
+MUFFATO_SALES_CHANNEL = "16"
+
+MUFFATO_BINDING_ID = (
+    "7d99bd6c-e905-4258-8c5c-4ff47a370f11"
+)
+
+MUFFATO_AUTOCOMPLETE_HASH = (
+    "dfdfa1d63a3244a3b78af4c2da594d69"
+    "dded502faea04b7c2c115b34f253d2b1"
+)
 
 
 @app.get("/")
@@ -55,7 +80,7 @@ def inicio():
     return {
         "sistema": "Coletor de preços",
         "status": "online",
-        "versao": "3.0.0"
+        "versao": "4.0.0"
     }
 
 
@@ -106,11 +131,7 @@ def consultar_atacadao(termo: str):
     requisicao = urllib.request.Request(
         url,
         headers={
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/140.0 Safari/537.36"
-            ),
+            "User-Agent": "Mozilla/5.0",
             "Accept": "application/json",
             "Accept-Language": "pt-BR,pt;q=0.9",
             "Referer": "https://www.atacadao.com.br/"
@@ -194,13 +215,8 @@ def extrair_ofertas_atacadao(item: dict):
             key=lambda oferta: oferta["preco"]
         )
 
-        preco_atacado = (
-            melhor_atacado["preco"]
-        )
-
-        quantidade_minima = (
-            melhor_atacado["minimo"]
-        )
+        preco_atacado = melhor_atacado["preco"]
+        quantidade_minima = melhor_atacado["minimo"]
 
     else:
         preco_atacado = None
@@ -240,10 +256,8 @@ def buscar_atacadao(produto: Produto):
                 termo
             )
 
-            produtos = (
-                obter_produtos_atacadao(
-                    dados
-                )
+            produtos = obter_produtos_atacadao(
+                dados
             )
 
             if not produtos:
@@ -296,20 +310,15 @@ def buscar_atacadao(produto: Produto):
 
         except Exception as erro:
             ultimo_erro = (
-                f"{type(erro).__name__}: "
-                f"{erro}"
+                f"{type(erro).__name__}: {erro}"
             )
 
-    if ultimo_erro:
-        observacao = (
-            "Falha ao consultar o Atacadão: "
-            + ultimo_erro[:180]
-        )
-    else:
-        observacao = (
-            "Produto não encontrado "
-            "no Atacadão."
-        )
+    observacao = (
+        "Falha ao consultar o Atacadão: "
+        + ultimo_erro[:180]
+        if ultimo_erro
+        else "Produto não encontrado no Atacadão."
+    )
 
     return {
         "produto_id": produto.id,
@@ -329,9 +338,7 @@ def buscar_atacadao(produto: Produto):
 # PÃO DE AÇÚCAR
 # ============================================================
 
-def consultar_pao_de_acucar(
-    termo: str
-):
+def consultar_pao_de_acucar(termo: str):
     payload = {
         "terms": termo,
         "page": 1,
@@ -354,18 +361,11 @@ def consultar_pao_de_acucar(
         data=corpo,
         method="POST",
         headers={
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/140.0 Safari/537.36"
-            ),
+            "User-Agent": "Mozilla/5.0",
             "Accept": "application/json",
-            "Accept-Language": "pt-BR,pt;q=0.9",
             "Content-Type": "application/json",
             "Origin": "https://www.paodeacucar.com",
-            "Referer": (
-                "https://www.paodeacucar.com/"
-            )
+            "Referer": "https://www.paodeacucar.com/"
         }
     )
 
@@ -385,19 +385,14 @@ def escolher_produto_pao(
     if not produtos:
         return None
 
-    marca = ""
-
-    if produto.marca:
-        marca = (
-            produto.marca
-            .strip()
-            .lower()
-        )
+    marca = (
+        produto.marca.strip().lower()
+        if produto.marca
+        else ""
+    )
 
     nome_base = (
-        produto.produto
-        .strip()
-        .lower()
+        produto.produto.strip().lower()
     )
 
     disponiveis = [
@@ -406,10 +401,11 @@ def escolher_produto_pao(
         if item.get("stock") is True
     ]
 
-    if disponiveis:
-        candidatos = disponiveis
-    else:
-        candidatos = produtos
+    candidatos = (
+        disponiveis
+        if disponiveis
+        else produtos
+    )
 
     for item in candidatos:
         nome_item = str(
@@ -434,33 +430,13 @@ def escolher_produto_pao(
         if marca_ok and nome_ok:
             return item
 
-    if marca:
-        for item in candidatos:
-            nome_item = str(
-                item.get("name", "")
-            ).lower()
-
-            marca_item = str(
-                item.get("brand", "")
-            ).lower()
-
-            if (
-                marca in marca_item
-                or marca in nome_item
-            ):
-                return item
-
     return candidatos[0]
 
 
-def buscar_pao_de_acucar(
-    produto: Produto
-):
+def buscar_pao_de_acucar(produto: Produto):
     termos = []
 
-    nome_com_marca = (
-        produto.produto.strip()
-    )
+    nome_com_marca = produto.produto.strip()
 
     if produto.marca:
         nome_com_marca = (
@@ -469,27 +445,19 @@ def buscar_pao_de_acucar(
         )
 
     if nome_com_marca:
-        termos.append(
-            nome_com_marca
-        )
+        termos.append(nome_com_marca)
 
-    nome_simples = (
-        produto.produto.strip()
-    )
-
-    if nome_simples:
+    if produto.produto.strip():
         termos.append(
-            nome_simples
+            produto.produto.strip()
         )
 
     ultimo_erro = None
 
     for termo in termos:
         try:
-            dados = (
-                consultar_pao_de_acucar(
-                    termo
-                )
+            dados = consultar_pao_de_acucar(
+                termo
             )
 
             produtos = dados.get(
@@ -497,28 +465,19 @@ def buscar_pao_de_acucar(
                 []
             )
 
-            item = (
-                escolher_produto_pao(
-                    produtos,
-                    produto
-                )
+            item = escolher_produto_pao(
+                produtos,
+                produto
             )
 
             if not item:
                 continue
 
-            preco = item.get(
-                "price"
-            )
-
             try:
                 preco = float(
-                    preco
+                    item.get("price")
                 )
-            except (
-                TypeError,
-                ValueError
-            ):
+            except (TypeError, ValueError):
                 continue
 
             if preco <= 0:
@@ -528,11 +487,9 @@ def buscar_pao_de_acucar(
                 item.get("stock")
             )
 
-            url_produto = (
-                item.get(
-                    "urlDetails",
-                    ""
-                )
+            url_produto = item.get(
+                "urlDetails",
+                ""
             )
 
             if (
@@ -562,33 +519,389 @@ def buscar_pao_de_acucar(
                     else "INDISPONIVEL"
                 ),
                 "observacao": (
-                    "Preço obtido do "
-                    "Pão de Açúcar."
+                    "Preço obtido do Pão de Açúcar."
                 )
             }
 
         except Exception as erro:
             ultimo_erro = (
-                f"{type(erro).__name__}: "
-                f"{erro}"
+                f"{type(erro).__name__}: {erro}"
             )
 
-    if ultimo_erro:
-        observacao = (
-            "Falha ao consultar "
-            "o Pão de Açúcar: "
-            + ultimo_erro[:180]
-        )
-    else:
-        observacao = (
-            "Produto não encontrado "
-            "no Pão de Açúcar."
-        )
+    observacao = (
+        "Falha ao consultar o Pão de Açúcar: "
+        + ultimo_erro[:180]
+        if ultimo_erro
+        else "Produto não encontrado no Pão de Açúcar."
+    )
 
     return {
         "produto_id": produto.id,
         "produto": produto.produto,
         "supermercado": "Pão de Açúcar",
+        "preco_unitario": None,
+        "preco_atacado": None,
+        "quantidade_minima": None,
+        "disponivel": False,
+        "url": "",
+        "status": "NAO_ENCONTRADO",
+        "observacao": observacao
+    }
+
+
+# ============================================================
+# SUPER MUFFATO
+# ============================================================
+
+def consultar_muffato_autocomplete(
+    termo: str
+):
+    variaveis = json.dumps(
+        {
+            "inputValue": termo
+        },
+        ensure_ascii=False,
+        separators=(",", ":")
+    ).encode("utf-8")
+
+    variaveis_base64 = (
+        base64.b64encode(
+            variaveis
+        ).decode("ascii")
+    )
+
+    extensions = {
+        "persistedQuery": {
+            "version": 1,
+            "sha256Hash": (
+                MUFFATO_AUTOCOMPLETE_HASH
+            ),
+            "sender": (
+                "vtex.store-components@3.x"
+            ),
+            "provider": (
+                "vtex.search-graphql@0.x"
+            )
+        },
+        "variables": variaveis_base64
+    }
+
+    parametros = urllib.parse.urlencode({
+        "workspace": "master",
+        "maxAge": "medium",
+        "appsEtag": "remove",
+        "domain": "store",
+        "locale": "pt-BR",
+        "__bindingId": MUFFATO_BINDING_ID,
+        "operationName": "Autocomplete",
+        "variables": "{}",
+        "extensions": json.dumps(
+            extensions,
+            separators=(",", ":")
+        )
+    })
+
+    url = (
+        f"{MUFFATO_AUTOCOMPLETE_API}"
+        f"?{parametros}"
+    )
+
+    requisicao = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "Mozilla/5.0",
+            "Accept": "application/json",
+            "Referer": "https://www.supermuffato.com.br/"
+        }
+    )
+
+    with urllib.request.urlopen(
+        requisicao,
+        timeout=25
+    ) as resposta:
+        return json.loads(
+            resposta.read().decode("utf-8")
+        )
+
+
+def obter_sugestoes_muffato(
+    dados: dict
+):
+    return (
+        dados.get("data", {})
+        .get("autocomplete", {})
+        .get("itemsReturned", [])
+    )
+
+
+def escolher_sugestao_muffato(
+    sugestoes: list[dict],
+    produto: Produto
+):
+    candidatos = [
+        item
+        for item in sugestoes
+        if item.get("productId")
+    ]
+
+    if not candidatos:
+        return None
+
+    ean = (
+        produto.ean.strip()
+        if produto.ean
+        else ""
+    )
+
+    marca = (
+        produto.marca.strip().lower()
+        if produto.marca
+        else ""
+    )
+
+    nome_base = (
+        produto.produto.strip().lower()
+    )
+
+    if ean:
+        for item in candidatos:
+            thumb = str(
+                item.get("thumb", "")
+            )
+
+            if ean in thumb:
+                return item
+
+    for item in candidatos:
+        nome_item = str(
+            item.get("name", "")
+        ).lower()
+
+        marca_ok = (
+            not marca
+            or marca in nome_item
+        )
+
+        nome_ok = (
+            not nome_base
+            or nome_base in nome_item
+        )
+
+        if marca_ok and nome_ok:
+            return item
+
+    return candidatos[0]
+
+
+def consultar_muffato_produto(
+    product_id: str
+):
+    parametros = urllib.parse.urlencode({
+        "fq": f"productId:{product_id}",
+        "sc": MUFFATO_SALES_CHANNEL
+    })
+
+    url = (
+        f"{MUFFATO_PRODUCT_API}"
+        f"?{parametros}"
+    )
+
+    requisicao = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "Mozilla/5.0",
+            "Accept": "application/json",
+            "Referer": "https://www.supermuffato.com.br/"
+        }
+    )
+
+    with urllib.request.urlopen(
+        requisicao,
+        timeout=25
+    ) as resposta:
+        return json.loads(
+            resposta.read().decode("utf-8")
+        )
+
+
+def extrair_oferta_muffato(
+    produto_vtex: dict
+):
+    itens = produto_vtex.get(
+        "items",
+        []
+    )
+
+    for item in itens:
+        for seller in item.get(
+            "sellers",
+            []
+        ):
+            oferta = seller.get(
+                "commertialOffer",
+                {}
+            )
+
+            disponivel = bool(
+                oferta.get("IsAvailable")
+            )
+
+            quantidade = (
+                oferta.get(
+                    "AvailableQuantity",
+                    0
+                )
+                or 0
+            )
+
+            try:
+                preco = float(
+                    oferta.get("Price")
+                )
+            except (TypeError, ValueError):
+                continue
+
+            if (
+                disponivel
+                and quantidade > 0
+                and preco > 0
+            ):
+                return {
+                    "preco": preco,
+                    "disponivel": True
+                }
+
+    return None
+
+
+def buscar_super_muffato(
+    produto: Produto
+):
+    termos = []
+
+    nome_com_marca = produto.produto.strip()
+
+    if produto.marca:
+        nome_com_marca = (
+            f"{nome_com_marca} "
+            f"{produto.marca.strip()}"
+        )
+
+    if nome_com_marca:
+        termos.append(nome_com_marca)
+
+    if produto.produto.strip():
+        termos.append(
+            produto.produto.strip()
+        )
+
+    if produto.ean:
+        termos.append(
+            produto.ean.strip()
+        )
+
+    ultimo_erro = None
+
+    for termo in termos:
+        try:
+            dados_busca = (
+                consultar_muffato_autocomplete(
+                    termo
+                )
+            )
+
+            sugestoes = obter_sugestoes_muffato(
+                dados_busca
+            )
+
+            sugestao = escolher_sugestao_muffato(
+                sugestoes,
+                produto
+            )
+
+            if not sugestao:
+                continue
+
+            product_id = str(
+                sugestao.get(
+                    "productId",
+                    ""
+                )
+            ).strip()
+
+            if not product_id:
+                continue
+
+            produtos_vtex = (
+                consultar_muffato_produto(
+                    product_id
+                )
+            )
+
+            if not produtos_vtex:
+                continue
+
+            produto_vtex = produtos_vtex[0]
+
+            oferta = extrair_oferta_muffato(
+                produto_vtex
+            )
+
+            if not oferta:
+                continue
+
+            link = produto_vtex.get(
+                "link",
+                ""
+            )
+
+            if not link:
+                slug = sugestao.get(
+                    "slug",
+                    ""
+                )
+
+                if slug:
+                    link = (
+                        "https://www.supermuffato.com.br/"
+                        f"{slug}/p"
+                    )
+
+            return {
+                "produto_id": produto.id,
+                "produto": produto_vtex.get(
+                    "productName",
+                    produto.produto
+                ),
+                "supermercado": "Super Muffato",
+                "preco_unitario": oferta["preco"],
+                "preco_atacado": None,
+                "quantidade_minima": None,
+                "disponivel": True,
+                "url": link,
+                "status": "OK",
+                "observacao": (
+                    "Preço obtido do Super Muffato - "
+                    "São José do Rio Preto JK."
+                )
+            }
+
+        except Exception as erro:
+            ultimo_erro = (
+                f"{type(erro).__name__}: {erro}"
+            )
+
+    observacao = (
+        "Falha ao consultar o Super Muffato: "
+        + ultimo_erro[:180]
+        if ultimo_erro
+        else "Produto não encontrado no Super Muffato."
+    )
+
+    return {
+        "produto_id": produto.id,
+        "produto": produto.produto,
+        "supermercado": "Super Muffato",
         "preco_unitario": None,
         "preco_atacado": None,
         "quantidade_minima": None,
@@ -611,7 +924,6 @@ def coletar(
 
     for produto in pedido.produtos:
 
-        # ATACADÃO
         atacadao = buscar_atacadao(
             produto
         )
@@ -627,7 +939,6 @@ def coletar(
             atacadao
         )
 
-        # PÃO DE AÇÚCAR
         pao_de_acucar = (
             buscar_pao_de_acucar(
                 produto
@@ -645,26 +956,22 @@ def coletar(
             pao_de_acucar
         )
 
-        # SUPER MUFFATO
-        resultados.append({
-            "produto_id": produto.id,
-            "produto": produto.produto,
-            "supermercado": "Super Muffato",
-            "loja": pedido.lojas.get(
+        super_muffato = (
+            buscar_super_muffato(
+                produto
+            )
+        )
+
+        super_muffato["loja"] = (
+            pedido.lojas.get(
                 "super_muffato",
                 ""
-            ),
-            "preco_unitario": None,
-            "preco_atacado": None,
-            "quantidade_minima": None,
-            "disponivel": False,
-            "url": "",
-            "status": "PENDENTE",
-            "observacao": (
-                "Coletor do Super Muffato "
-                "ainda será configurado."
             )
-        })
+        )
+
+        resultados.append(
+            super_muffato
+        )
 
     return {
         "data_hora": datetime.now().isoformat(),
