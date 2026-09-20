@@ -1,11 +1,13 @@
 from datetime import datetime
 from typing import Any
 import base64
+import csv
+import io
 import json
 import urllib.parse
 import urllib.request
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from pydantic import BaseModel
 
 
@@ -1040,3 +1042,56 @@ def coletar(
         "cep": pedido.cep,
         "precos": resultados
     }
+    @app.get("/planilha")
+def planilha(
+    produto: str,
+    marca: str = "",
+    ean: str = "",
+    quantidade: float = 1
+):
+    item = Produto(
+        id=1,
+        produto=produto,
+        marca=marca or None,
+        ean=ean or None,
+        unidade="Unidade",
+        quantidade=quantidade
+    )
+
+    resultados = [
+        buscar_atacadao(item),
+        buscar_pao_de_acucar(item),
+        buscar_super_muffato(item)
+    ]
+
+    saida = io.StringIO()
+
+    escritor = csv.writer(saida)
+
+    escritor.writerow([
+        "Supermercado",
+        "Produto",
+        "Preco Unitario",
+        "Preco Atacado",
+        "Quantidade Minima",
+        "Disponivel",
+        "Status",
+        "URL"
+    ])
+
+    for resultado in resultados:
+        escritor.writerow([
+            resultado.get("supermercado", ""),
+            resultado.get("produto", ""),
+            resultado.get("preco_unitario", ""),
+            resultado.get("preco_atacado", ""),
+            resultado.get("quantidade_minima", ""),
+            resultado.get("disponivel", ""),
+            resultado.get("status", ""),
+            resultado.get("url", "")
+        ])
+
+    return Response(
+        content=saida.getvalue(),
+        media_type="text/csv; charset=utf-8"
+    )
