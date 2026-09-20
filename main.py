@@ -690,7 +690,7 @@ def escolher_sugestao_muffato(
         if marca_ok and nome_ok:
             return item
 
-    return candidatos[0]
+    return Nome
 
 
 def consultar_muffato_produto(
@@ -779,6 +779,11 @@ def buscar_super_muffato(
 ):
     termos = []
 
+    if produto.ean:
+        termos.append(
+            produto.ean.strip()
+    )
+
     nome_com_marca = produto.produto.strip()
 
     if produto.marca:
@@ -793,11 +798,6 @@ def buscar_super_muffato(
     if produto.produto.strip():
         termos.append(
             produto.produto.strip()
-        )
-
-    if produto.ean:
-        termos.append(
-            produto.ean.strip()
         )
 
     ultimo_erro = None
