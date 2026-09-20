@@ -1042,7 +1042,12 @@ def coletar(
         "cep": pedido.cep,
         "precos": resultados
     }
-    
+
+def formatar_preco_csv(valor):
+    if valor is None or valor == "":
+        return ""
+
+    return f"{float(valor):.2f}".replace(".", ",")
 @app.get("/planilha")
 def planilha(
     produto: str,
@@ -1084,8 +1089,12 @@ def planilha(
         escritor.writerow([
             resultado.get("supermercado", ""),
             resultado.get("produto", ""),
-            resultado.get("preco_unitario", ""),
-            resultado.get("preco_atacado", ""),
+            formatar_preco_csv(
+    resultado.get("preco_unitario")
+),
+formatar_preco_csv(
+    resultado.get("preco_atacado")
+),
             resultado.get("quantidade_minima", ""),
             resultado.get("disponivel", ""),
             resultado.get("status", ""),
