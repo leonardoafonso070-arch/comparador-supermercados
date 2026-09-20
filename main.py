@@ -1,8 +1,8 @@
 from datetime import datetime
 from typing import Any
+import json
 import urllib.parse
 import urllib.request
-import json
 
 from fastapi import FastAPI
 from pydantic import BaseModel
@@ -10,7 +10,7 @@ from pydantic import BaseModel
 
 app = FastAPI(
     title="Coletor de Preços de Supermercados",
-    version="2.0.0"
+    version="2.1.0"
 )
 
 
@@ -30,12 +30,19 @@ class PedidoColeta(BaseModel):
     produtos: list[Produto]
 
 
+# Atacadão - Loja São José do Rio Preto América
+ATACADAO_API = "https://www.atacadao.com.br/api/graphql"
+ATACADAO_SELLER = "atacadaobr949"
+ATACADAO_REGION_ID = "v2.EB9CBB9497C9DD495FB7A98C30D4069D"
+ATACADAO_SALES_CHANNEL = "1"
+
+
 @app.get("/")
 def inicio():
     return {
         "sistema": "Coletor de preços",
         "status": "online",
-        "versao": "2.0.0"
+        "versao": "2.1.0"
     }
 
 
@@ -44,115 +51,234 @@ def health():
     return {"status": "ok"}
 
 
-def buscar_atacadao(produto: Produto, cep: str | None):
-    termo = produto.ean if produto.ean else produto.produto
+def consultar_atacadao(termo: str):
+    canal = json.dumps(
+        {
+            "salesChannel": ATACADAO_SALES_CHANNEL,
+            "regionId": ATACADAO_REGION_ID,
+            "seller": ATACADAO_SELLER
+        },
+        separators=(",", ":")
+    )
 
-    if produto.marca:
-        termo_nome = f"{produto.produto} {produto.marca}"
+    variables = {
+        "term": termo,
+        "selectedFacets": [
+            {
+                "key": "channel",
+                "value": canal
+            },
+            {
+                "key": "locale",
+                "value": "pt-BR"
+            }
+        ]
+    }
+
+    parametros = urllib.parse.urlencode({
+        "operationName": "SearchSuggestionsQuery",
+        "variables": json.dumps(
+            variables,
+            ensure_ascii=False,
+            separators=(",", ":")
+        )
+    })
+
+    url = f"{ATACADAO_API}?{parametros}"
+
+    requisicao = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/140.0 Safari/537.36"
+            ),
+            "Accept": "application/json",
+            "Accept-Language": "pt-BR,pt;q=0.9",
+            "Referer": "https://www.atacadao.com.br/"
+        }
+    )
+
+    with urllib.request.urlopen(
+        requisicao,
+        timeout=25
+    ) as resposta:
+        return json.loads(
+            resposta.read().decode("utf-8")
+        )
+
+
+def obter_produtos_atacadao(dados: dict):
+    return (
+        dados.get("data", {})
+        .get("search", {})
+        .get("suggestions", {})
+        .get("products", [])
+    )
+
+
+def extrair_ofertas_atacadao(item: dict):
+    ofertas = item.get(
+        "offers",
+        {}
+    ).get(
+        "offers",
+        []
+    )
+
+    validas = []
+
+    for oferta in ofertas:
+        try:
+            preco = float(oferta.get("price"))
+            minimo = int(
+                oferta.get("minQuantity") or 1
+            )
+        except (TypeError, ValueError):
+            continue
+
+        if preco > 0:
+            validas.append({
+                "preco": preco,
+                "minimo": minimo
+            })
+
+    if not validas:
+        return None, None, None
+
+    unitarias = [
+        x for x in validas
+        if x["minimo"] <= 1
+    ]
+
+    if unitarias:
+        preco_unitario = min(
+            x["preco"] for x in unitarias
+        )
     else:
-        termo_nome = produto.produto
+        preco_unitario = min(
+            validas,
+            key=lambda x: x["minimo"]
+        )["preco"]
 
-    # Primeiro tenta pelo EAN.
-    # Se não encontrar, tenta pelo nome + marca.
+    atacado = [
+        x for x in validas
+        if x["minimo"] > 1
+    ]
+
+    if atacado:
+        melhor_atacado = min(
+            atacado,
+            key=lambda x: x["preco"]
+        )
+
+        preco_atacado = melhor_atacado["preco"]
+        quantidade_minima = melhor_atacado["minimo"]
+
+    else:
+        preco_atacado = None
+        quantidade_minima = None
+
+    return (
+        preco_unitario,
+        preco_atacado,
+        quantidade_minima
+    )
+
+
+def buscar_atacadao(produto: Produto):
     termos = []
 
     if produto.ean:
-        termos.append(produto.ean)
+        termos.append(
+            produto.ean.strip()
+        )
 
-    termos.append(termo_nome)
+    nome = produto.produto.strip()
 
-    for busca in termos:
+    if produto.marca:
+        nome = (
+            f"{nome} "
+            f"{produto.marca.strip()}"
+        )
+
+    if nome:
+        termos.append(nome)
+
+    ultimo_erro = None
+
+    for termo in termos:
         try:
-            termo_codificado = urllib.parse.quote(busca)
+            dados = consultar_atacadao(termo)
 
-            url_api = (
-                "https://www.atacadao.com.br/"
-                "api/catalog_system/pub/products/search/"
-                + termo_codificado
+            produtos = obter_produtos_atacadao(
+                dados
             )
 
-            requisicao = urllib.request.Request(
-                url_api,
-                headers={
-                    "User-Agent": "Mozilla/5.0",
-                    "Accept": "application/json"
-                }
-            )
-
-            with urllib.request.urlopen(
-                requisicao,
-                timeout=20
-            ) as resposta:
-                dados = json.loads(
-                    resposta.read().decode("utf-8")
-                )
-
-            if not dados:
+            if not produtos:
                 continue
 
-            produto_encontrado = dados[0]
+            # O Atacadão pode devolver um GTIN
+            # diferente do EAN pesquisado.
+            # Por isso usamos o produto que
+            # a própria busca retornou.
+            item = produtos[0]
 
-            nome = produto_encontrado.get(
-                "productName",
-                produto.produto
+            (
+                preco_unitario,
+                preco_atacado,
+                quantidade_minima
+            ) = extrair_ofertas_atacadao(
+                item
             )
 
-            link = produto_encontrado.get("link", "")
+            if preco_unitario is None:
+                continue
 
-            itens = produto_encontrado.get("items", [])
+            slug = item.get("slug", "")
 
-            melhor_preco = None
-            disponivel = False
+            if slug:
+                url_produto = (
+                    "https://www.atacadao.com.br/"
+                    f"{slug}/p"
+                )
+            else:
+                url_produto = ""
 
-            for item in itens:
-                sellers = item.get("sellers", [])
-
-                for seller in sellers:
-                    oferta = seller.get(
-                        "commertialOffer",
-                        {}
-                    )
-
-                    quantidade = oferta.get(
-                        "AvailableQuantity",
-                        0
-                    )
-
-                    preco = oferta.get("Price")
-
-                    if (
-                        quantidade
-                        and quantidade > 0
-                        and preco
-                        and preco > 0
-                    ):
-                        disponivel = True
-
-                        if (
-                            melhor_preco is None
-                            or preco < melhor_preco
-                        ):
-                            melhor_preco = preco
-
-            if melhor_preco is not None:
-                return {
-                    "produto_id": produto.id,
-                    "produto": nome,
-                    "supermercado": "Atacadão",
-                    "preco_unitario": melhor_preco,
-                    "preco_atacado": None,
-                    "quantidade_minima": None,
-                    "disponivel": disponivel,
-                    "url": link,
-                    "status": "OK",
-                    "observacao": (
-                        "Preço obtido do catálogo online "
-                        "do Atacadão."
-                    )
-                }
+            return {
+                "produto_id": produto.id,
+                "produto": item.get(
+                    "name",
+                    produto.produto
+                ),
+                "supermercado": "Atacadão",
+                "preco_unitario": preco_unitario,
+                "preco_atacado": preco_atacado,
+                "quantidade_minima": quantidade_minima,
+                "disponivel": True,
+                "url": url_produto,
+                "status": "OK",
+                "observacao": (
+                    "Preço obtido do Atacadão - "
+                    "São José do Rio Preto América."
+                )
+            }
 
         except Exception as erro:
-            ultimo_erro = str(erro)
+            ultimo_erro = (
+                f"{type(erro).__name__}: {erro}"
+            )
+
+    if ultimo_erro:
+        observacao = (
+            "Falha ao consultar o Atacadão: "
+            + ultimo_erro[:180]
+        )
+    else:
+        observacao = (
+            "Produto não encontrado no Atacadão."
+        )
 
     return {
         "produto_id": produto.id,
@@ -164,9 +290,7 @@ def buscar_atacadao(produto: Produto, cep: str | None):
         "disponivel": False,
         "url": "",
         "status": "NAO_ENCONTRADO",
-        "observacao": (
-            "Não foi possível obter preço do Atacadão."
-        )
+        "observacao": observacao
     }
 
 
@@ -176,20 +300,19 @@ def coletar(pedido: PedidoColeta):
 
     for produto in pedido.produtos:
 
-        # ATACADÃO
-        resultado_atacadao = buscar_atacadao(
-            produto,
-            pedido.cep
+        atacadao = buscar_atacadao(
+            produto
         )
 
-        resultado_atacadao["loja"] = pedido.lojas.get(
-            "atacadao",
-            ""
+        atacadao["loja"] = (
+            pedido.lojas.get(
+                "atacadao",
+                ""
+            )
         )
 
-        resultados.append(resultado_atacadao)
+        resultados.append(atacadao)
 
-        # PÃO DE AÇÚCAR
         resultados.append({
             "produto_id": produto.id,
             "produto": produto.produto,
@@ -210,7 +333,6 @@ def coletar(pedido: PedidoColeta):
             )
         })
 
-        # SUPER MUFFATO
         resultados.append({
             "produto_id": produto.id,
             "produto": produto.produto,
